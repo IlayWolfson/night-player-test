@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>בדיקת נגן לילה</title>
+<style>
+/* Throwaway spike page: one narrow column, a form, then a log. Answers one question: does YouTube play by itself after a timer? */
+:root{
+  --bg:#EEF1F4; --surface:#FFFFFF; --ink:#13202C; --ink-2:#4A5B6A; --line:#CBD4DC;
+  --accent:#1D5D7A; --accent-ink:#FFFFFF; --ok:#1F7A3A; --bad:#A3322A;
+  --font:'Segoe UI',system-ui,-apple-system,sans-serif; --mono:ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#0B1218; --surface:#121C25; --ink:#DCE6EE; --ink-2:#92A4B3; --line:#263544;
+    --accent:#7CC0DB; --accent-ink:#06151D; --ok:#6FCF8E; --bad:#F08A80; color-scheme:dark; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 var(--font)}
+.app{max-width:640px;margin:0 auto;padding-block:20px 48px;padding-inline:16px}
+h1{font-size:1.6rem;margin:0 0 4px}
+p{margin:0 0 8px}
+.hint{color:var(--ink-2);font-size:.92rem}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;margin-block:16px;display:grid;gap:12px}
+label{font-weight:600;display:block;margin-bottom:4px}
+input,textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%;min-height:44px}
+textarea{font-family:var(--mono);direction:ltr}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px}
+input[type=number]{direction:ltr;font-family:var(--mono)}
+button{min-height:48px;border-radius:10px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);font:600 1.05rem var(--font);cursor:pointer;width:100%}
+button.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#player-wrap{aspect-ratio:16/9;max-width:100%;background:#000;border-radius:8px;overflow:hidden}
+#player-wrap iframe{width:100%;height:100%;display:block}
+.status{font-size:1.4rem;font-weight:700;font-family:var(--mono);direction:ltr;text-align:center}
+#log{font-family:var(--mono);font-size:.82rem;direction:ltr;text-align:left;white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:320px;overflow:auto;margin:0}
+.ok{color:var(--ok)} .bad{color:var(--bad)}
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>בדיקת נגן לילה</h1>
+  <p class="hint">דף בדיקה זמני. הוא בודק שאלה אחת: האם YouTube מתנגן לבד אחרי טיימר, בעוצמה נמוכה. השאר את הדף פתוח והמסך דלוק.</p>
+
+  <div class="card">
+    <div>
+      <label for="url">קישור לסרטון YouTube</label>
+      <input id="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=..." dir="ltr">
+    </div>
+    <div>
+      <label for="starts">זמני התחלה של קטעים (שורה לכל קטע, mm:ss)</label>
+      <textarea id="starts" rows="3">0:30
+1:10</textarea>
+    </div>
+    <div class="row">
+      <div><label for="clip">אורך קטע (שנ׳)</label><input id="clip" type="number" min="3" max="60" value="15"></div>
+      <div><label for="gap">רווח (שנ׳)</label><input id="gap" type="number" min="0" max="120" value="10"></div>
+      <div><label for="delay">טיימר (דק׳)</label><input id="delay" type="number" min="0" max="240" step="0.5" value="1"></div>
+      <div><label for="vol">עוצמה (0–100)</label><input id="vol" type="number" min="1" max="100" value="20"></div>
+    </div>
+    <button id="arm" type="button">התחל בדיקה</button>
+    <button id="stop" type="button" class="ghost" hidden>עצור</button>
+    <div class="status" id="status" aria-live="polite">—</div>
+  </div>
+
+  <div id="player-wrap"><div id="player"></div></div>
+
+  <div class="card">
+    <strong>יומן</strong>
+    <p class="hint">בסוף הבדיקה צלם מסך של היומן ושלח אותו.</p>
+    <pre id="log"></pre>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+var $=function(id){ return document.getElementById(id); };
+var player=null, apiReady=false, timers=[], wakeLock=null, running=false;
+
+function log(msg,cls){
+  var t=new Date().toLocaleTimeString('he-IL',{hour12:false});
+  var line=document.createElement('span');
+  if(cls) line.className=cls;
+  line.textContent=t+'  '+msg+'\n';
+  $('log').appendChild(line);
+  $('log').scrollTop=$('log').scrollHeight;
+}
+function videoId(url){
+  var m=String(url).match(/(?:v=|youtu\.be\/|shorts\/|embed\/)([A-Za-z0-9_-]{11})/);
+  return m?m[1]:(/^[A-Za-z0-9_-]{11}$/.test(url.trim())?url.trim():null);
+}
+function parseTime(s){
+  var p=s.trim().split(':').map(Number);
+  if(p.some(isNaN)||!p.length) return null;
+  return p.reduce(function(a,v){ return a*60+v; },0);
+}
+function later(fn,ms){ var id=setTimeout(fn,ms); timers.push(id); return id; }
+function clearTimers(){ timers.forEach(clearTimeout); timers=[]; }
+
+function lockScreen(){
+  if(!('wakeLock' in navigator)){ log('wakeLock: not supported','bad'); return; }
+  navigator.wakeLock.request('screen').then(function(l){
+    wakeLock=l; log('wakeLock: on','ok');
+    l.addEventListener('release',function(){ wakeLock=null; log('wakeLock: released'); });
+  }).catch(function(e){ log('wakeLock: refused ('+e.name+')','bad'); });
+}
+document.addEventListener('visibilitychange',function(){
+  log('page '+document.visibilityState);
+  if(document.visibilityState==='visible'&&running&&!wakeLock) lockScreen();
+});
+
+window.onYouTubeIframeAPIReady=function(){ apiReady=true; log('YouTube API loaded','ok'); };
+var tag=document.createElement('script');
+tag.src='https://www.youtube.com/iframe_api';
+tag.onerror=function(){ log('YouTube API failed to load','bad'); };
+document.head.appendChild(tag);
+
+var STATES={'-1':'unstarted','0':'ended','1':'PLAYING','2':'paused','3':'buffering','5':'cued'};
+
+function makePlayer(id,onReady){
+  if(player){ player.cueVideoById(id); onReady(); return; }
+  player=new YT.Player('player',{
+    videoId:id,
+    playerVars:{playsinline:1,controls:1,rel:0},
+    events:{
+      onReady:function(){ log('player ready','ok'); onReady(); },
+      onStateChange:function(e){
+        var muted=player.isMuted&&player.isMuted();
+        log('state: '+(STATES[e.data]||e.data)+(e.data===1?(' · muted='+muted+' · vol='+player.getVolume()):''),e.data===1?(muted?'bad':'ok'):'');
+      },
+      onError:function(e){ log('player error '+e.data,'bad'); },
+      onAutoplayBlocked:function(){ log('AUTOPLAY BLOCKED by browser','bad'); }
+    }
+  });
+}
+
+function playClip(start,secs,vol,done){
+  log('clip @'+start+'s for '+secs+'s');
+  try{ player.unMute(); player.setVolume(vol); player.seekTo(start,true); player.playVideo(); }
+  catch(e){ log('play threw: '+e.message,'bad'); }
+  later(function(){
+    var s=player.getPlayerState();
+    if(s!==1) log('after 3s state is '+(STATES[s]||s)+' (expected PLAYING)','bad');
+  },3000);
+  later(function(){ player.pauseVideo(); log('clip end'); done(); },secs*1000);
+}
+
+function run(starts,clip,gap,vol){
+  var i=0;
+  (function next(){
+    if(!running) return;
+    if(i>=starts.length){ $('status').textContent='done'; log('all clips done','ok'); finish(); return; }
+    $('status').textContent='clip '+(i+1)+'/'+starts.length;
+    playClip(starts[i++],clip,vol,function(){ later(next,gap*1000); });
+  })();
+}
+
+function finish(){
+  running=false; clearTimers();
+  $('arm').hidden=false; $('stop').hidden=true;
+  try{ if(wakeLock) wakeLock.release(); }catch(e){}
+  wakeLock=null;
+}
+
+$('arm').addEventListener('click',function(){
+  var id=videoId($('url').value);
+  if(!id){ log('could not read a video id from the link','bad'); return; }
+  if(!apiReady){ log('YouTube API not loaded yet, try again in a moment','bad'); return; }
+  var starts=$('starts').value.split('\n').filter(function(s){ return s.trim(); }).map(parseTime);
+  if(!starts.length||starts.some(function(s){ return s===null; })){ log('bad start times, use mm:ss per line','bad'); return; }
+  var clip=+$('clip').value||15, gap=+$('gap').value||0, delayMin=+$('delay').value||0, vol=+$('vol').value||20;
+
+  running=true; $('arm').hidden=true; $('stop').hidden=false;
+  log('armed: '+starts.length+' clips, delay '+delayMin+' min, vol '+vol+' · '+navigator.userAgent);
+  lockScreen();
+  makePlayer(id,function(){
+    /* Warm-up inside the tap: start muted and pause, so the browser ties this player to a user gesture. */
+    try{ player.mute(); player.playVideo(); later(function(){ player.pauseVideo(); player.unMute(); log('warm-up done'); },800); }catch(e){ log('warm-up threw: '+e.message,'bad'); }
+    var at=Date.now()+delayMin*60000;
+    (function tick(){
+      if(!running) return;
+      var left=at-Date.now();
+      if(left<=0){ log('timer fired (late by '+Math.round(-left/1000)+'s)'); run(starts,clip,gap,vol); return; }
+      var s=Math.ceil(left/1000);
+      $('status').textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+      later(tick,1000);
+    })();
+  });
+});
+$('stop').addEventListener('click',function(){ try{ player.pauseVideo(); }catch(e){} log('stopped by user'); $('status').textContent='stopped'; finish(); });
+})();
+</script>
+</body>
+</html>
