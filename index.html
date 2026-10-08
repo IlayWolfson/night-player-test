@@ -48,7 +48,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
       <input id="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=..." dir="ltr">
     </div>
     <div>
-      <label for="starts">זמני התחלה של קטעים (שורה לכל קטע, mm:ss)</label>
+      <label for="starts">זמני התחלה של קטעים (שורה לכל קטע, mm:ss או mm:ss | מושג)</label>
       <textarea id="starts" rows="3">0:30
 1:10</textarea>
     </div>
@@ -91,7 +91,7 @@ function videoId(url){
   return m?m[1]:(/^[A-Za-z0-9_-]{11}$/.test(url.trim())?url.trim():null);
 }
 function parseTime(s){
-  var p=s.trim().split(':').map(Number);
+  var p=s.split('|')[0].trim().split(':').map(Number);
   if(p.some(isNaN)||!p.length) return null;
   return p.reduce(function(a,v){ return a*60+v; },0);
 }
