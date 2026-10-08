@@ -48,12 +48,12 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
       <input id="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=..." dir="ltr">
     </div>
     <div>
-      <label for="starts">זמני התחלה של קטעים (שורה לכל קטע, mm:ss או mm:ss | מושג)</label>
+      <label for="starts">קטעים (שורה לכל קטע: התחלה | סוף | מושג. בלי סוף, האורך ברירת המחדל)</label>
       <textarea id="starts" rows="3">0:30
 1:10</textarea>
     </div>
     <div class="row">
-      <div><label for="clip">אורך קטע (שנ׳)</label><input id="clip" type="number" min="3" max="60" value="15"></div>
+      <div><label for="clip">אורך ברירת מחדל (שנ׳)</label><input id="clip" type="number" min="3" max="60" value="15"></div>
       <div><label for="gap">רווח (שנ׳)</label><input id="gap" type="number" min="0" max="120" value="10"></div>
       <div><label for="delay">טיימר (דק׳)</label><input id="delay" type="number" min="0" max="240" step="0.5" value="1"></div>
       <div><label for="vol">עוצמה (0–100)</label><input id="vol" type="number" min="1" max="100" value="20"></div>
@@ -91,9 +91,20 @@ function videoId(url){
   return m?m[1]:(/^[A-Za-z0-9_-]{11}$/.test(url.trim())?url.trim():null);
 }
 function parseTime(s){
-  var p=s.split('|')[0].trim().split(':').map(Number);
+  var p=s.trim().split(':').map(Number);
   if(p.some(isNaN)||!p.length) return null;
   return p.reduce(function(a,v){ return a*60+v; },0);
+}
+/* A line is "start", "start | term", or "start | end | term" (end as mm:ss). Without an end, the default length applies. */
+var MIN_CLIP=5, MAX_CLIP=60;
+function parseLine(line,defSecs){
+  var parts=line.split('|').map(function(s){ return s.trim(); });
+  var start=parseTime(parts[0]);
+  if(start===null) return null;
+  var end=parts[1]&&/^\d+(:\d+)+(\.\d+)?$/.test(parts[1])?parseTime(parts[1]):null;
+  var secs=end!==null?end-start:defSecs;
+  if(!(secs>=MIN_CLIP&&secs<=MAX_CLIP)) return null;
+  return {start:start,secs:secs};
 }
 function later(fn,ms){ var id=setTimeout(fn,ms); timers.push(id); return id; }
 function clearTimers(){ timers.forEach(clearTimeout); timers=[]; }
@@ -159,13 +170,14 @@ function playClip(start,secs,vol,done){
   })();
 }
 
-function run(starts,clip,gap,vol){
+function run(clips,gap,vol){
   var i=0;
   (function next(){
     if(!running) return;
-    if(i>=starts.length){ $('status').textContent='done'; log('all clips done','ok'); finish(); return; }
-    $('status').textContent='clip '+(i+1)+'/'+starts.length;
-    playClip(starts[i++],clip,vol,function(){ later(next,gap*1000); });
+    if(i>=clips.length){ $('status').textContent='done'; log('all clips done','ok'); finish(); return; }
+    $('status').textContent='clip '+(i+1)+'/'+clips.length;
+    var c=clips[i++];
+    playClip(c.start,c.secs,vol,function(){ later(next,gap*1000); });
   })();
 }
 
@@ -180,9 +192,11 @@ $('arm').addEventListener('click',function(){
   var id=videoId($('url').value);
   if(!id){ log('could not read a video id from the link','bad'); return; }
   if(!apiReady){ log('YouTube API not loaded yet, try again in a moment','bad'); return; }
-  var starts=$('starts').value.split('\n').filter(function(s){ return s.trim(); }).map(parseTime);
-  if(!starts.length||starts.some(function(s){ return s===null; })){ log('bad start times, use mm:ss per line','bad'); return; }
   var clip=+$('clip').value||15, gap=+$('gap').value||0, delayMin=+$('delay').value||0, vol=+$('vol').value||20;
+  var lines=$('starts').value.split('\n').filter(function(s){ return s.trim(); });
+  var starts=lines.map(function(l){ return parseLine(l,clip); });
+  var bad=starts.indexOf(null);
+  if(!starts.length||bad>=0){ log('bad line '+(bad+1)+': use mm:ss | mm:ss | term, clip '+MIN_CLIP+'-'+MAX_CLIP+'s','bad'); return; }
 
   running=true; $('arm').hidden=true; $('stop').hidden=false;
   log('armed: '+starts.length+' clips, delay '+delayMin+' min, vol '+vol+' · '+navigator.userAgent);
@@ -194,7 +208,7 @@ $('arm').addEventListener('click',function(){
     (function tick(){
       if(!running) return;
       var left=at-Date.now();
-      if(left<=0){ log('timer fired (late by '+Math.round(-left/1000)+'s)'); run(starts,clip,gap,vol); return; }
+      if(left<=0){ log('timer fired (late by '+Math.round(-left/1000)+'s)'); run(starts,gap,vol); return; }
       var s=Math.ceil(left/1000);
       $('status').textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
       later(tick,1000);
