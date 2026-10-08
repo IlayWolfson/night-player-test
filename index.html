@@ -143,7 +143,20 @@ function playClip(start,secs,vol,done){
     var s=player.getPlayerState();
     if(s!==1) log('after 3s state is '+(STATES[s]||s)+' (expected PLAYING)','bad');
   },3000);
-  later(function(){ player.pauseVideo(); log('clip end'); done(); },secs*1000);
+  /* End by the video's own clock, not wall time, so buffering after a seek does not cut the clip short. */
+  var end=start+secs, giveUpAt=Date.now()+(secs+15)*1000;
+  (function watch(){
+    if(!running) return;
+    var t=player.getCurrentTime();
+    /* Right after seekTo the player can still report the previous position; only trust times inside this clip. */
+    var inClip=t>=start-1&&t<=end+5;
+    if((inClip&&t>=end)||Date.now()>giveUpAt){
+      player.pauseVideo();
+      log('clip end at '+t.toFixed(1)+'s'+(t<end?' (gave up waiting)':''),t<end?'bad':'');
+      done(); return;
+    }
+    later(watch,250);
+  })();
 }
 
 function run(starts,clip,gap,vol){
